@@ -4,11 +4,90 @@ const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 
 /**
- * Создание видео с изображениями и аудио (15 секунд)
+ * Генерация SRT субтитров с равномерным разбиением текста
+ */
+async function generateSubtitles(text, duration, outputDir) {
+    const srtPath = path.join(outputDir, `subtitles_${uuidv4()}.srt`);
+    
+    // Очищаем текст
+    const cleanText = text.trim();
+    if (!cleanText) {
+        throw new Error('Текст для субтитров пустой');
+    }
+    
+    // Разбиваем текст на фразы (примерно по 40-50 символов)
+    const maxCharsPerSubtitle = 45;
+    const words = cleanText.split(' ');
+    const subtitles = [];
+    let currentSubtitle = '';
+    
+    for (const word of words) {
+        if ((currentSubtitle + ' ' + word).length <= maxCharsPerSubtitle) {
+            currentSubtitle = currentSubtitle ? currentSubtitle + ' ' + word : word;
+        } else {
+            if (currentSubtitle) {
+                subtitles.push(currentSubtitle);
+            }
+            currentSubtitle = word;
+        }
+    }
+    
+    if (currentSubtitle) {
+        subtitles.push(currentSubtitle);
+    }
+    
+    // Если получилось слишком много субтитров, объединяем
+    if (subtitles.length > 6) {
+        const combined = [];
+        for (let i = 0; i < subtitles.length; i += 2) {
+            if (i + 1 < subtitles.length) {
+                combined.push(subtitles[i] + ' ' + subtitles[i + 1]);
+            } else {
+                combined.push(subtitles[i]);
+            }
+        }
+        subtitles.splice(0, subtitles.length, ...combined);
+    }
+    
+    // Генерируем временные метки (равномерное распределение)
+    const timePerSubtitle = duration / subtitles.length;
+    let srtContent = '';
+    
+    for (let i = 0; i < subtitles.length; i++) {
+        const startTime = i * timePerSubtitle;
+        const endTime = (i + 1) * timePerSubtitle;
+        
+        const startTimecode = formatTimecode(startTime);
+        const endTimecode = formatTimecode(endTime);
+        
+        srtContent += `${i + 1}\n`;
+        srtContent += `${startTimecode} --> ${endTimecode}\n`;
+        srtContent += `${subtitles[i]}\n\n`;
+    }
+    
+    await fs.writeFile(srtPath, srtContent, 'utf8');
+    console.log(`✅ SRT субтитры созданы: ${srtPath}`);
+    return srtPath;
+}
+
+/**
+ * Форматирование времени в формат SRT (HH:MM:SS,mmm)
+ */
+function formatTimecode(seconds) {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = Math.floor(seconds % 60);
+    const milliseconds = Math.floor((seconds % 1) * 1000);
+    
+    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')},${String(milliseconds).padStart(3, '0')}`;
+}
+
+/**
+ * Создание видео с изображениями и аудио (15 секунд, вертикальный формат 720x1280)
  */
 async function createVideo(imagePaths, audioPath, text, outputPath) {
     return new Promise(async (resolve, reject) => {
-        console.log('🎬 Начинаю создание видео...');
+        console.log('🎬 Начинаю создание видео (вертикальный формат 720x1280)...');
         console.log(`📷 Изображений: ${imagePaths.length}`);
         console.log(`🎵 Аудио файл: ${audioPath}`);
         console.log(`📝 Текст: "${text}"`);
@@ -23,17 +102,9 @@ async function createVideo(imagePaths, audioPath, text, outputPath) {
                 await fs.remove(outputPath);
             }
 
-            // Подготавливаем текст: убираем кавычки, переносы, ограничиваем
-            const cleanText = text
-                .replace(/"/g, '')
-                .replace(/'/g, '')
-                .replace(/\n/g, ' ')
-                .replace(/\r/g, ' ')
-                .trim()
-                .substring(0, 200);
-
-            const textFilePath = path.join(path.dirname(outputPath), `text_${uuidv4()}.txt`);
-            await fs.writeFile(textFilePath, cleanText, 'utf8');
+            // Генерируем SRT субтитры
+            console.log('📝 Генерирую SRT субтитры...');
+            const subtitlesPath = await generateSubtitles(text, 15, path.dirname(outputPath));
 
             let command = ffmpeg();
 
@@ -41,24 +112,19 @@ async function createVideo(imagePaths, audioPath, text, outputPath) {
             imagePaths.forEach(p => command.input(p));
             command.input(audioPath); // аудио
 
-            // Фильтр
+            // Фильтр для вертикального формата с субтитрами
             const filterComplex = imagePaths.length === 1
-                ? `[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,drawtext=textfile='${textFilePath}':fontsize=24:fontcolor=white:x=(w-text_w)/2:y=h-th-20:shadowcolor=black:shadowx=2:shadowy=2[v];[1:a]atrim=duration=15,asetpts=PTS-STARTPTS[a]`
+                ? `[0:v]scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2[v];[1:a]atrim=duration=15,asetpts=PTS-STARTPTS[a]`
                 : (() => {
                     let filters = '';
                     imagePaths.forEach((_, i) => {
-                        const f = `[${i}:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,drawtext=textfile='${textFilePath}':fontsize=24:fontcolor=white:x=(w-text_w)/2:y=h-th-20:shadowcolor=black:shadowx=2:shadowy=2[v${i}]`;
+                        const f = `[${i}:v]scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2[v${i}]`;
                         filters += i === 0 ? f : `;${f}`;
                     });
                     const concat = imagePaths.map((_, i) => `[v${i}]`).join('');
                     return `${filters};${concat}concat=n=${imagePaths.length}:v=1:a=0[v];[1:a]atrim=duration=15,asetpts=PTS-STARTPTS[a]`;
                 })();
 
-            // Ключевые исправления:
-            // - Убраны .outputOptions с -c:v и -c:a
-            // - Используем .videoCodec() и .audioCodec()
-            // - Только один .map()
-            // - Используем .output(), а не .save()
             command
                 .complexFilter(filterComplex, ['v', 'a'])
                 .map('[v]')
@@ -72,14 +138,18 @@ async function createVideo(imagePaths, audioPath, text, outputPath) {
                     '-t 15',
                     '-movflags +faststart'
                 ])
+                .videoFilters([
+                    `subtitles='${subtitlesPath}':force_style='FontName=Arial,FontSize=16,PrimaryColour=&Hffffff,OutlineColour=&H000000,Outline=2,Alignment=2,MarginV=50'`
+                ])
                 .output(outputPath)
                 .on('start', cmd => console.log('🚀 FFmpeg:', cmd))
                 .on('progress', p => console.log(`📊 ${p.percent?.toFixed(1)}%`))
                 .on('end', async () => {
                     try {
-                        await fs.remove(textFilePath);
+                        await fs.remove(subtitlesPath);
+                        console.log('📄 SRT файл удален');
                     } catch (e) {
-                        console.warn('⚠️ Не удалён текст:', e.message);
+                        console.warn('⚠️ Не удалён SRT:', e.message);
                     }
 
                     // Проверим, что файл создан и не пустой
@@ -92,14 +162,14 @@ async function createVideo(imagePaths, audioPath, text, outputPath) {
                         return reject(new Error('Видео файл пустой'));
                     }
 
-                    console.log('✅ Видео с озвучкой готово:', outputPath);
+                    console.log('✅ Видео с озвучкой готово (720x1280):', outputPath);
                     resolve(outputPath);
                 })
                 .on('error', async (err) => {
                     try {
-                        await fs.remove(textFilePath);
+                        await fs.remove(subtitlesPath);
                     } catch (e) {
-                        console.warn('⚠️ Не удалён текст:', e.message);
+                        console.warn('⚠️ Не удалён SRT:', e.message);
                     }
                     console.error('❌ Ошибка FFmpeg:', err.message || err);
                     reject(err);
@@ -114,11 +184,11 @@ async function createVideo(imagePaths, audioPath, text, outputPath) {
 }
 
 /**
- * Создание простого видео без аудио
+ * Создание простого видео без аудио (вертикальный формат 720x1280)
  */
 async function createSimpleVideo(imagePaths, text, outputPath) {
     return new Promise(async (resolve, reject) => {
-        console.log('🎬 Создаю простое видео без аудио...');
+        console.log('🎬 Создаю простое видео без аудио (720x1280)...');
 
         try {
             if (!(await fs.pathExists(imagePaths[0]))) {
@@ -129,20 +199,15 @@ async function createSimpleVideo(imagePaths, text, outputPath) {
                 await fs.remove(outputPath);
             }
 
-            const cleanText = text
-                .replace(/"/g, '')
-                .replace(/'/g, '')
-                .replace(/\n/g, ' ')
-                .substring(0, 200);
-
-            const textFilePath = path.join(path.dirname(outputPath), `text_simple_${uuidv4()}.txt`);
-            await fs.writeFile(textFilePath, cleanText, 'utf8');
+            // Генерируем SRT субтитры
+            console.log('📝 Генерирую SRT субтитры для простого видео...');
+            const subtitlesPath = await generateSubtitles(text, 15, path.dirname(outputPath));
 
             ffmpeg(imagePaths[0])
                 .videoFilters([
-                    'scale=1280:720:force_original_aspect_ratio=decrease',
-                    'pad=1280:720:(ow-iw)/2:(oh-ih)/2',
-                    `drawtext=textfile='${textFilePath}':fontsize=24:fontcolor=white:x=(w-text_w)/2:y=h-th-20:shadowcolor=black:shadowx=2:shadowy=2`
+                    'scale=720:1280:force_original_aspect_ratio=decrease',
+                    'pad=720:1280:(ow-iw)/2:(oh-ih)/2',
+                    `subtitles='${subtitlesPath}':force_style='FontName=Arial,FontSize=16,PrimaryColour=&Hffffff,OutlineColour=&H000000,Outline=2,Alignment=2,MarginV=50'`
                 ])
                 .videoCodec('libx264')
                 .outputOptions([
@@ -153,18 +218,19 @@ async function createSimpleVideo(imagePaths, text, outputPath) {
                 .output(outputPath)
                 .on('end', async () => {
                     try {
-                        await fs.remove(textFilePath);
+                        await fs.remove(subtitlesPath);
+                        console.log('📄 SRT файл удален');
                     } catch (e) {
-                        console.warn('⚠️ Не удалён текст:', e.message);
+                        console.warn('⚠️ Не удалён SRT:', e.message);
                     }
-                    console.log('✅ Простое видео создано:', outputPath);
+                    console.log('✅ Простое видео создано (720x1280):', outputPath);
                     resolve(outputPath);
                 })
                 .on('error', async (err) => {
                     try {
-                        await fs.remove(textFilePath);
+                        await fs.remove(subtitlesPath);
                     } catch (e) {
-                        console.warn('⚠️ Не удалён текст:', e.message);
+                        console.warn('⚠️ Не удалён SRT:', e.message);
                     }
                     console.error('❌ Ошибка:', err.message || err);
                     reject(err);
@@ -213,5 +279,6 @@ module.exports = {
     createVideo,
     createSimpleVideo,
     checkFFmpeg,
-    getVideoInfo
+    getVideoInfo,
+    generateSubtitles
 };
