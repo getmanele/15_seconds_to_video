@@ -127,8 +127,6 @@ async function createVideo(imagePaths, audioPath, text, outputPath) {
 
             command
                 .complexFilter(filterComplex, ['v', 'a'])
-                .map('[v]')
-                .map('[a]')
                 .videoCodec('libx264')
                 .audioCodec('aac')
                 .outputOptions([
